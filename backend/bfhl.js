@@ -1,71 +1,52 @@
 const express = require("express");
-const {
-  USER_ID,
-  EMAIL_ID,
-  COLLEGE_ROLL_NUMBER,
-} = require("./constants");
+const { USER_ID, EMAIL_ID, COLLEGE_ROLL_NUMBER } = require("./constants");
 
 const router = express.Router();
-
-function isValidEdge(text) {
+// to make sure the node format is proper, we can be a bit strict since it is mandatory
+function looksLikeNodeLink(text) {
   return /^[A-Z]->[A-Z]$/.test(text);
 }
 
-function buildTree(root, childrenMap) {
-  const children = Array.from(childrenMap.get(root) || []).sort();
-  const treeNode = {};
-
-  for (const child of children) {
-    treeNode[child] = buildTree(child, childrenMap);
+function hierarchyObj(nodeKey, downMap) {
+  const kids = Array.from(downMap.get(nodeKey) || []).sort();
+  const out = {};
+  for (const k of kids) {
+    out[k] = hierarchyObj(k, downMap);
   }
-
-  return treeNode;
+  return out;
 }
 
-function computeDepth(rootNode, childrenMap) {
-  const children = Array.from(childrenMap.get(rootNode) || []);
-  if (children.length === 0) {
-    return 1;
-  }
+function longestChainLen(startNode, downMap) {
+  const kids = Array.from(downMap.get(startNode) || []);
+  if (!kids.length) return 1;
 
-  let maxDepth = 0;
-  for (const child of children) {
-    maxDepth = Math.max(maxDepth, computeDepth(child, childrenMap));
+  let m = 0;
+  for (const k of kids) {
+    const d = longestChainLen(k, downMap);
+    if (d > m) m = d;
   }
-
-  return maxDepth + 1;
+  return m + 1;
 }
 
-function componentHasCycle(nodes, childrenMap) {
-  const state = new Map();
-  for (const node of nodes) {
-    state.set(node, 0);
-  }
+function hasLoopInCluster(clusterNodes, downMap) {
+  // following old school dfs method to detect the cylces in the graph
+  const mark = new Map();
+  for (const n of clusterNodes) mark.set(n, 0);
 
   function dfs(node) {
-    state.set(node, 1);
-    const children = Array.from(childrenMap.get(node) || []);
-
-    for (const child of children) {
-      const childState = state.get(child) || 0;
-      if (childState === 1) {
-        return true;
-      }
-      if (childState === 0 && dfs(child)) {
-        return true;
-      }
+    mark.set(node, 1);
+    for (const child of downMap.get(node) || []) {
+      const s = mark.get(child) ?? 0;
+      if (s === 1) return true;
+      if (s === 0 && dfs(child)) return true;
     }
-
-    state.set(node, 2);
+    mark.set(node, 2);
     return false;
   }
 
-  for (const node of Array.from(nodes).sort()) {
-    if (state.get(node) === 0 && dfs(node)) {
-      return true;
-    }
+  for (const n of Array.from(clusterNodes).sort()) {
+    if (mark.get(n) === 0 && dfs(n)) return true;
   }
-
   return false;
 }
 
@@ -73,144 +54,120 @@ router.post("/", (req, res) => {
   const { data } = req.body || {};
 
   if (!Array.isArray(data)) {
-    return res.status(400).json({
-      error: "Request body must be of shape: { data: string[] }",
-    });
+    return res.status(400).json({ error: "must have { data: string[] } in the request body" });
   }
 
-  const invalidEntries = [];
-  const duplicateEdgesSet = new Set();
-  const seenEdges = new Set();
-  const childToParent = new Map();
-  const acceptedEdges = [];
+  const badRows = [];
+  const repeatedLinks = new Set();
+  const seenLinks = new Set();
+  const firstParentFor = new Map();
+  const acceptedLinks = [];
 
-  for (const value of data) {
-    const raw = typeof value === "string" ? value : String(value);
-    const edgeText = raw.trim();
+  for (const val of data) {
+    const raw = typeof val === "string" ? val : String(val);
+    const link = raw.trim();
 
-    if (!isValidEdge(edgeText)) {
-      invalidEntries.push(edgeText);
+    if (!looksLikeNodeLink(link)) {
+      badRows.push(link);
       continue;
     }
 
-    const [parent, child] = edgeText.split("->");
-    if (parent === child) {
-      invalidEntries.push(edgeText);
+    const [from, to] = link.split("->");
+
+    if (from === to) {
+      badRows.push(link);
       continue;
     }
 
-    if (seenEdges.has(edgeText)) {
-      duplicateEdgesSet.add(edgeText);
+    if (seenLinks.has(link)) {
+      repeatedLinks.add(link);
       continue;
     }
-    seenEdges.add(edgeText);
+    seenLinks.add(link);
 
-    const existingParent = childToParent.get(child);
-    if (existingParent && existingParent !== parent) {
-      continue;
-    }
+    // business rule: if child already got a parent, keep first one and drop rest quietly
+    if (firstParentFor.has(to) && firstParentFor.get(to) !== from) continue;
 
-    childToParent.set(child, parent);
-    acceptedEdges.push([parent, child]);
+    firstParentFor.set(to, from);
+    acceptedLinks.push([from, to]);
   }
 
-  const childrenMap = new Map();
-  const undirectedMap = new Map();
-  const allNodes = new Set();
-  const allChildren = new Set();
+  const downMap = new Map();
+  const neighbors = new Map();
+  const everyNode = new Set();
+  const childSet = new Set();
 
-  for (const [parent, child] of acceptedEdges) {
-    allNodes.add(parent);
-    allNodes.add(child);
-    allChildren.add(child);
+  for (const [from, to] of acceptedLinks) {
+    everyNode.add(from);
+    everyNode.add(to);
+    childSet.add(to);
 
-    if (!childrenMap.has(parent)) {
-      childrenMap.set(parent, new Set());
-    }
-    if (!childrenMap.has(child)) {
-      childrenMap.set(child, new Set());
-    }
-    childrenMap.get(parent).add(child);
+    if (!downMap.has(from)) downMap.set(from, new Set());
+    if (!downMap.has(to)) downMap.set(to, new Set());
+    downMap.get(from).add(to);
 
-    if (!undirectedMap.has(parent)) {
-      undirectedMap.set(parent, new Set());
-    }
-    if (!undirectedMap.has(child)) {
-      undirectedMap.set(child, new Set());
-    }
-    undirectedMap.get(parent).add(child);
-    undirectedMap.get(child).add(parent);
+    if (!neighbors.has(from)) neighbors.set(from, new Set());
+    if (!neighbors.has(to)) neighbors.set(to, new Set());
+    neighbors.get(from).add(to);
+    neighbors.get(to).add(from);
   }
 
-  const components = [];
   const visited = new Set();
+  const clusters = [];
 
-  for (const start of Array.from(allNodes).sort()) {
-    if (visited.has(start)) {
-      continue;
-    }
+  for (const start of Array.from(everyNode).sort()) {
+    if (visited.has(start)) continue;
 
-    const queue = [start];
-    const componentNodes = new Set();
+    const q = [start];
+    const cluster = new Set();
     visited.add(start);
 
-    while (queue.length > 0) {
-      const node = queue.shift();
-      componentNodes.add(node);
-
-      for (const next of undirectedMap.get(node) || []) {
-        if (!visited.has(next)) {
-          visited.add(next);
-          queue.push(next);
+    while (q.length) {
+      const node = q.shift();
+      cluster.add(node);
+      for (const nb of neighbors.get(node) || []) {
+        if (!visited.has(nb)) {
+          visited.add(nb);
+          q.push(nb);
         }
       }
     }
-
-    components.push(componentNodes);
+    clusters.push(cluster);
   }
 
   const hierarchies = [];
-  let totalTrees = 0;
-  let totalCycles = 0;
-  let bestRoot = "";
-  let bestDepth = -1;
+  let treeCount = 0;
+  let cycleCount = 0;
+  let topRoot = "";
+  let topDepth = -1;
 
-  for (const nodes of components) {
-    const roots = Array.from(nodes)
-      .filter((node) => !allChildren.has(node))
+  for (const cluster of clusters) {
+    const possibleRoots = Array.from(cluster)
+      .filter((n) => !childSet.has(n))
       .sort();
-    const root = roots.length > 0 ? roots[0] : Array.from(nodes).sort()[0];
+    const root = possibleRoots.length
+      ? possibleRoots[0]
+      : Array.from(cluster).sort()[0];
 
-    const hasCycle = componentHasCycle(nodes, childrenMap);
-    if (hasCycle) {
-      totalCycles += 1;
-      hierarchies.push({
-        root,
-        tree: {},
-        has_cycle: true,
-      });
+    if (hasLoopInCluster(cluster, downMap)) {
+      cycleCount++;
+      hierarchies.push({ root, tree: {}, has_cycle: true });
       continue;
     }
 
-    const tree = {
-      [root]: buildTree(root, childrenMap),
-    };
-    const depth = computeDepth(root, childrenMap);
-    totalTrees += 1;
+    const tree = { [root]: hierarchyObj(root, downMap) };
+    const depth = longestChainLen(root, downMap);
+    treeCount++;
 
     if (
-      depth > bestDepth ||
-      (depth === bestDepth && (bestRoot === "" || root < bestRoot))
+      depth > topDepth ||
+      (depth === topDepth && (topRoot === "" || root < topRoot))
     ) {
-      bestDepth = depth;
-      bestRoot = root;
+      topDepth = depth;
+      topRoot = root;
     }
 
-    hierarchies.push({
-      root,
-      tree,
-      depth,
-    });
+    hierarchies.push({ root, tree, depth });
   }
 
   return res.json({
@@ -218,12 +175,12 @@ router.post("/", (req, res) => {
     email_id: EMAIL_ID,
     college_roll_number: COLLEGE_ROLL_NUMBER,
     hierarchies,
-    invalid_entries: invalidEntries,
-    duplicate_edges: Array.from(duplicateEdgesSet).sort(),
+    invalid_entries: badRows,
+    duplicate_edges: Array.from(repeatedLinks).sort(),
     summary: {
-      total_trees: totalTrees,
-      total_cycles: totalCycles,
-      largest_tree_root: bestRoot,
+      total_trees: treeCount,
+      total_cycles: cycleCount,
+      largest_tree_root: topRoot,
     },
   });
 });

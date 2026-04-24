@@ -159,7 +159,7 @@ function App() {
 
       <main className="shell">
         <header className="panel hero reveal">
-          <p className="kicker">SRM Full Stack Evaluator View</p>
+          <p className="kicker">Tarunkumar S - Bajaj FS Frontend</p>
           <h1>Hierarchy Intelligence Console</h1>
           <p>
             Submit edge data to your BFHL endpoint and present a clear, structured,
@@ -169,7 +169,7 @@ function App() {
 
         <section className="panel controls reveal">
           <div className="top-rail">
-            <p className="mini-note">Evaluators love clarity and speed. This view is optimized for both.</p>
+            {/* <p className="mini-note">Evaluators love clarity and speed. This view is optimized for both.</p> */}
             <button className="btn btn-ghost" type="button" onClick={pingApi}>
               {endpointStatus === "checking"
                 ? "Checking API..."
