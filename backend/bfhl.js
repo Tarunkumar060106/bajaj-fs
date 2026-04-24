@@ -22,8 +22,8 @@ function buildTree(root, childrenMap) {
   return treeNode;
 }
 
-function computeDepth(root, childrenMap) {
-  const children = Array.from(childrenMap.get(root) || []);
+function computeDepth(rootNode, childrenMap) {
+  const children = Array.from(childrenMap.get(rootNode) || []);
   if (children.length === 0) {
     return 1;
   }
